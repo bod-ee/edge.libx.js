@@ -254,7 +254,22 @@ export class MCPAdapter {
 				};
 			}
 
-			for (const qp of queryParams) {
+			// The DECLARED params are the tool's contract — honour them for GET/DELETE instead of
+			// only letting them enrich a name that inference happened to find. inferQueryParams()
+			// scans the handler's *transpiled source* for `query.X`, which is best-effort at most:
+			// it is defeated by reading params through a helper (`qp(req, 'path')`), by
+			// `req.query?.x` (the optional chain breaks the literal), by a single-use
+			// `const query = req.query` (bundlers inline it away), by statement order (Bun merges
+			// consecutive consts into one comma-list), and by any minifier. Servers really did ship
+			// `properties: {}` for a REQUIRED param — an agent cannot learn it exists, so the tool
+			// is uncallable. Inference stays as a SUPPLEMENT so servers that never declared their
+			// params keep working unchanged.
+			// POST/PUT/PATCH are excluded: there, declared params become body fields (above).
+			const declaredQuery = ['POST', 'PUT', 'PATCH'].includes(method)
+				? []
+				: Object.keys(meta?.params ?? {}).filter((n) => n !== 'body' && !properties[n]);
+
+			for (const qp of new Set([...declaredQuery, ...queryParams])) {
 				if (!properties[qp]) {
 					properties[qp] = {
 						type: meta?.params?.[qp]?.type ?? 'string',
