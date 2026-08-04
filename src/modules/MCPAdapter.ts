@@ -553,11 +553,20 @@ export class MCPAdapter {
 		const stdin = proc.stdin;
 		const stdout = proc.stdout;
 		const stderr = proc.stderr;
-		// Precedence: explicit option → MCP_STDIO_IDLE_MS env → 30min default. Set the env (or option)
-		// to 0 to disable the self-exit entirely (server lives for the whole client session). The env
-		// knob lets any edge.libx MCP be tuned at launch without a code change.
+		// Precedence: explicit option → MCP_STDIO_IDLE_MS env → DISABLED (0).
+		//
+		// The default used to be 30min, which silently broke long client sessions: in stdio mode the
+		// CLIENT owns this process's lifetime, and MCP's stdio transport has neither reconnect nor a
+		// keepalive (verified: Claude Code 2.1.221 never calls the MCP client's `ping()` — the only
+		// keepalives in the binary are WS/HTTP2). So 30min without a tool call = `process.exit(0)`,
+		// the client reports "server disconnected", and every tool vanishes until a manual /mcp.
+		//
+		// Reaping is already covered without a timer: stdin EOF (`end`/`close`) and a broken stdout
+		// pipe all exit(0) below, so the process dies with its client. The idle timer therefore
+		// protected against nothing real and cost a dead toolset. Set the env/option to a positive
+		// number to opt back in (e.g. a supervised host that respawns on demand).
 		const envIdle = Number(proc.env?.MCP_STDIO_IDLE_MS);
-		const idleMs = options?.idleTimeoutMs ?? (Number.isFinite(envIdle) ? envIdle : 30 * 60_000);
+		const idleMs = options?.idleTimeoutMs ?? (Number.isFinite(envIdle) ? envIdle : 0);
 
 		stdin.setEncoding('utf8');
 
