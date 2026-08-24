@@ -1,6 +1,6 @@
 {
   "name": "edge.libx.js",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "main": "build/main.js",
   "license": "MIT",
   "author": "Elya Livshitz",
