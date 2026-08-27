@@ -86,7 +86,11 @@ export interface MCPOptions {
 	 *
 	 * Explicit allow-list, never "forward everything": the inbound Authorization is
 	 * the MCP server's own credential, and forwarding it wholesale would hand every
-	 * upstream route a token it was never meant to see. Default: none, unchanged.
+	 * upstream route a token it was never meant to see. `authorization` and `cookie`
+	 * are therefore REJECTED from this list (see the constructor) — declaring them
+	 * would both leak the caller's MCP credential into the app's handlers and, since
+	 * forwarded headers are applied last, overwrite the adapter's own internal Bearer.
+	 * Default: none, unchanged.
 	 */
 	forwardHeaders?: string[];
 }
@@ -154,7 +158,17 @@ export class MCPAdapter {
 		this.instructions = options?.instructions;
 		this.globalParams = options?.globalParams;
 		this.onToolCall = options?.onToolCall;
-		this.forwardHeaders = (options?.forwardHeaders ?? []).map(h => h.toLowerCase());
+		// Deny the caller's own credential headers. On a multi-tenant host any tenant can
+		// declare `forwardHeaders`, so an allow-list that accepts `authorization` is a
+		// credential-harvesting vector against everyone calling that app's MCP endpoint.
+		const denied = new Set(['authorization', 'cookie']);
+		this.forwardHeaders = (options?.forwardHeaders ?? [])
+			.map(h => h.toLowerCase().trim())
+			.filter(h => {
+				if (!denied.has(h)) return true;
+				console.error(`[MCP] forwardHeaders: refusing to forward "${h}" — it is the caller's own credential, not the route's.`);
+				return false;
+			});
 		if (options?.auth) {
 			this.auth = new MCPAuth(options.auth);
 		}

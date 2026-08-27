@@ -69,6 +69,25 @@ describe('MCPAdapter forwardHeaders', () => {
 		expect(body.auth).toBeNull();
 	});
 
+	it('REFUSES to forward authorization/cookie even when explicitly declared', async () => {
+		// On a shared control plane any tenant can declare forwardHeaders. Honouring
+		// `authorization` would (a) hand that tenant's handlers the caller's MCP
+		// credential and (b) — since forwarded headers are applied last — overwrite the
+		// adapter's own internal Bearer on every dispatched request.
+		const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+		const mcp = createRouter().asMCP({ name: 'T', forwardHeaders: ['Authorization', 'Cookie', 'x-admin-key'] });
+		const res = await rpc(mcp, 'get_echo', {
+			authorization: 'Bearer caller-mcp-credential',
+			cookie: 'session=abc',
+			'x-admin-key': 'letmein',
+		});
+		const body = payload(res);
+		expect(body.auth).toBeNull();
+		expect(body.admin).toBe('letmein'); // the legitimate one still forwards
+		expect(spy).toHaveBeenCalled();
+		spy.mockRestore();
+	});
+
 	it('is case-insensitive about the configured name', async () => {
 		const mcp = createRouter().asMCP({ name: 'T', forwardHeaders: ['X-Admin-Key'] });
 		const res = await rpc(mcp, 'get_secret', { 'x-admin-key': 'letmein' });
