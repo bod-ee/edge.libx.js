@@ -76,6 +76,19 @@ export interface MCPOptions {
 	globalParams?: Record<string, { type?: string; description?: string }>;
 	/** Wraps every callTool invocation — use for auth context, logging, etc. */
 	onToolCall?: (name: string, args: Record<string, any>, next: () => Promise<any>) => Promise<any>;
+	/**
+	 * Inbound header names copied onto the internal request a tool call dispatches.
+	 *
+	 * A tool call is served by building a fresh Request for the matched route, which
+	 * carries no headers from the MCP request that triggered it. Any route that
+	 * authenticates on a header is therefore unreachable over MCP — it sees no
+	 * credential and refuses with its own 403. Naming those headers here forwards them.
+	 *
+	 * Explicit allow-list, never "forward everything": the inbound Authorization is
+	 * the MCP server's own credential, and forwarding it wholesale would hand every
+	 * upstream route a token it was never meant to see. Default: none, unchanged.
+	 */
+	forwardHeaders?: string[];
 }
 
 interface ToolAnnotations {
@@ -119,6 +132,7 @@ export class MCPAdapter {
 	private mcpMeta: Map<string, ToolMeta>;
 	private globalParams?: Record<string, { type?: string; description?: string }>;
 	private onToolCall?: MCPOptions['onToolCall'];
+	private forwardHeaders: string[] = [];
 	public auth?: MCPAuth;
 	/** Cached tool descriptors, invalidated when the route count changes. */
 	private toolsCache?: ToolDefinition[];
@@ -140,6 +154,7 @@ export class MCPAdapter {
 		this.instructions = options?.instructions;
 		this.globalParams = options?.globalParams;
 		this.onToolCall = options?.onToolCall;
+		this.forwardHeaders = (options?.forwardHeaders ?? []).map(h => h.toLowerCase());
 		if (options?.auth) {
 			this.auth = new MCPAuth(options.auth);
 		}
@@ -321,14 +336,25 @@ export class MCPAdapter {
 		return null;
 	}
 
-	public async callTool(name: string, args: Record<string, any> = {}): Promise<any> {
+	public async callTool(name: string, args: Record<string, any> = {}, forwarded?: Record<string, string>): Promise<any> {
 		if (this.onToolCall) {
-			return this.onToolCall(name, args, () => this._callTool(name, args));
+			return this.onToolCall(name, args, () => this._callTool(name, args, forwarded));
 		}
-		return this._callTool(name, args);
+		return this._callTool(name, args, forwarded);
 	}
 
-	private async _callTool(name: string, args: Record<string, any> = {}): Promise<any> {
+	/** Pick the configured headers off an inbound MCP request, for forwarding to the tool's route. */
+	public captureForwardHeaders(request: Request): Record<string, string> | undefined {
+		if (!this.forwardHeaders.length) return undefined;
+		const out: Record<string, string> = {};
+		for (const name of this.forwardHeaders) {
+			const value = request.headers.get(name);
+			if (value != null) out[name] = value;
+		}
+		return Object.keys(out).length ? out : undefined;
+	}
+
+	private async _callTool(name: string, args: Record<string, any> = {}, forwarded?: Record<string, string>): Promise<any> {
 		const route = this.findRoute(name);
 		if (!route) {
 			return { isError: true, content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
@@ -373,6 +399,9 @@ export class MCPAdapter {
 		const headers: Record<string, string> = {};
 		if (this.auth?.options.secret) headers['Authorization'] = `Bearer ${this.auth.options.secret}`;
 		if (['POST', 'PUT', 'PATCH'].includes(method)) headers['Content-Type'] = 'application/json';
+		// Forwarded inbound headers last: a route that authenticates on a header cannot
+		// see one otherwise, and the tool call fails with that route's own 403.
+		if (forwarded) Object.assign(headers, forwarded);
 		const requestInit: RequestInit = { method, headers };
 		if (['POST', 'PUT', 'PATCH'].includes(method)) {
 			requestInit.body = JSON.stringify(args.body || {});
@@ -415,7 +444,7 @@ export class MCPAdapter {
 		}
 	}
 
-	public async handleJsonRpc(message: JsonRpcRequest, sendNotification?: ProgressSink): Promise<any> {
+	public async handleJsonRpc(message: JsonRpcRequest, sendNotification?: ProgressSink, forwarded?: Record<string, string>): Promise<any> {
 		const { method, id, params } = message;
 
 		switch (method) {
@@ -444,7 +473,7 @@ export class MCPAdapter {
 
 			case 'tools/call': {
 				const token = params?._meta?.progressToken;
-				const invoke = () => this.callTool(params?.name, params?.arguments ?? {});
+				const invoke = () => this.callTool(params?.name, params?.arguments ?? {}, forwarded);
 				const result =
 					token != null && sendNotification && progressStore
 						? await progressStore.run({ token, send: sendNotification, counter: { n: 0 } }, invoke)
@@ -503,6 +532,7 @@ export class MCPAdapter {
 		// POST: JSON-RPC request
 		try {
 			const body = await request.json() as JsonRpcRequest;
+			const forwarded = this.captureForwardHeaders(request);
 
 			// Streamable HTTP: when the client passes a progressToken and accepts an
 			// event-stream, respond with SSE so notifications/progress can be emitted
@@ -510,7 +540,7 @@ export class MCPAdapter {
 			const token = body?.method === 'tools/call' ? (body.params as any)?._meta?.progressToken : undefined;
 			const acceptsSse = (request.headers.get('accept') || '').includes('text/event-stream');
 			if (token != null && acceptsSse && progressStore) {
-				const handle = this.handleJsonRpc.bind(this);
+				const handle = (m: JsonRpcRequest, send: ProgressSink) => this.handleJsonRpc(m, send, forwarded);
 				const stream = new ReadableStream({
 					async start(controller) {
 						const encoder = new TextEncoder();
@@ -529,7 +559,7 @@ export class MCPAdapter {
 				});
 			}
 
-			const result = await this.handleJsonRpc(body);
+			const result = await this.handleJsonRpc(body, undefined, forwarded);
 			if (result === null) {
 				return new Response(null, { status: 204 });
 			}
