@@ -196,6 +196,31 @@ describe('MCPAdapter', () => {
 			expect(content.name).toBe('Alice');
 		});
 
+		it('handles tools/call for POST with FLAT args — the shape the tool schema advertises', async () => {
+			// Regression (bod-browser post_eval, Sep 2026): flat args were diverted to the query
+			// string and the body-reading route got {} — "Missing 'script'" while script was passed.
+			const result = await mcp.handleJsonRpc({
+				jsonrpc: '2.0',
+				id: 41,
+				method: 'tools/call',
+				params: { name: 'post_users', arguments: { name: 'Alice' } },
+			});
+			const content = JSON.parse(result.result.content[0].text);
+			expect(content.created).toBe(true);
+			expect(content.name).toBe('Alice');
+		});
+
+		it('explicit body wins over a flat arg of the same name (back-compat)', async () => {
+			const result = await mcp.handleJsonRpc({
+				jsonrpc: '2.0',
+				id: 42,
+				method: 'tools/call',
+				params: { name: 'post_users', arguments: { name: 'Flat', body: { name: 'Nested' } } },
+			});
+			const content = JSON.parse(result.result.content[0].text);
+			expect(content.name).toBe('Nested');
+		});
+
 		it('handles tools/call for GET with query params', async () => {
 			const result = await mcp.handleJsonRpc({
 				jsonrpc: '2.0',

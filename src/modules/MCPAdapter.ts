@@ -418,7 +418,14 @@ export class MCPAdapter {
 		if (forwarded) Object.assign(headers, forwarded);
 		const requestInit: RequestInit = { method, headers };
 		if (['POST', 'PUT', 'PATCH'].includes(method)) {
-			requestInit.body = JSON.stringify(args.body || {});
+			// The tool schema advertises FLAT params, but this used to send ONLY `args.body` — so a
+			// schema-conformant call reached a body-reading route as `{}` (bod-browser post_eval:
+			// "Missing 'script'" while the caller was passing it, the args silently diverted to the
+			// query string). Send the flat args as the body; an explicit `body` object still wins,
+			// so callers that learned the old nesting keep working. Path params stay out of the body.
+			const { body: nested, ...flat } = args;
+			for (const k of pathParams) delete flat[k];
+			requestInit.body = JSON.stringify(nested && typeof nested === 'object' ? { ...flat, ...nested } : flat);
 		}
 
 		const request = new Request(fullUrl, requestInit);
