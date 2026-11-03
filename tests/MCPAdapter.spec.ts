@@ -22,6 +22,10 @@ function createTestRouter() {
 		return { updated: true, id: req.params.id, ...body };
 	});
 
+	rw.router.post('/echo', async (req: IRequest) => {
+		return { path: req.query.path, body: await req.json() };
+	});
+
 	rw.router.delete('/items/:id', (req: IRequest) => {
 		return { deleted: req.params.id };
 	});
@@ -219,6 +223,19 @@ describe('MCPAdapter', () => {
 			});
 			const content = JSON.parse(result.result.content[0].text);
 			expect(content.name).toBe('Nested');
+		});
+
+		it('explicit body is sent verbatim: no query-param leak, arrays stay arrays', async () => {
+			// Regression (mcp-firebase put_db, Nov 2026): { path, body: [..] } stored {0,1,path}.
+			const result = await mcp.handleJsonRpc({
+				jsonrpc: '2.0',
+				id: 43,
+				method: 'tools/call',
+				params: { name: 'post_echo', arguments: { path: 'a/b', body: ['x', 'y'] } },
+			});
+			const content = JSON.parse(result.result.content[0].text);
+			expect(content.body).toEqual(['x', 'y']);
+			expect(content.path).toBe('a/b');
 		});
 
 		it('handles tools/call for GET with query params', async () => {

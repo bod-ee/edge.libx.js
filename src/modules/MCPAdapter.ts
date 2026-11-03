@@ -423,9 +423,11 @@ export class MCPAdapter {
 			// "Missing 'script'" while the caller was passing it, the args silently diverted to the
 			// query string). Send the flat args as the body; an explicit `body` object still wins,
 			// so callers that learned the old nesting keep working. Path params stay out of the body.
+			// An explicit `body` is sent VERBATIM: merging flat args into it leaked query params
+			// (mcp-firebase put_db stored a stray `path` key) and spread arrays into {0,1,...}.
 			const { body: nested, ...flat } = args;
 			for (const k of pathParams) delete flat[k];
-			requestInit.body = JSON.stringify(nested && typeof nested === 'object' ? { ...flat, ...nested } : flat);
+			requestInit.body = JSON.stringify(nested !== undefined ? nested : flat);
 		}
 
 		const request = new Request(fullUrl, requestInit);
